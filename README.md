@@ -97,5 +97,5 @@ Each folder contains its own README with setup instructions.
 Clone the repository:
 
 ```bash
-git clone https://github.com/stellara-network/stellara-Contracts
+git clone https://github.com/stellara-network/Stellara_contracts
 cd stellara-Contracts
