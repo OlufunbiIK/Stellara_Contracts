@@ -33,15 +33,21 @@ This repository contains four core smart contracts that power the Stellara ecosy
 
 ```
 ├── contracts/
-│   ├── trading/         # DEX trading contract
-│   ├── academy/         # Credential & NFT contract
+│   ├── trading/         # ✨ Upgradeable DEX trading contract
+│   ├── academy/         # ✨ NEW: Academy vesting & rewards contract
+│   │   ├── VESTING_DESIGN.md           # Vesting architecture & design
+│   │   ├── VESTING_QUICK_REFERENCE.md  # Quick reference guide
+│   │   ├── INTEGRATION_GUIDE.md        # Backend/frontend integration
+│   │   ├── DELIVERY_SUMMARY.md         # Project completion summary
+│   │   └── README.md                   # Academy contract overview
 │   ├── social_rewards/  # Engagement rewards contract
 │   └── messaging/       # P2P messaging contract
-├── shared/              # Shared utilities and types
+├── shared/              # ✨ NEW: Shared governance module (reusable)
+│   └── src/governance.rs # Multi-sig upgrade governance
 ├── Cargo.toml          # Workspace configuration
-├── UPGRADEABILITY.md   # ✨ NEW: Upgradeability design documentation
-├── GOVERNANCE_GUIDE.md # ✨ NEW: Step-by-step governance procedures
-├── QUICK_REFERENCE.md  # ✨ NEW: Quick reference card
+├── UPGRADEABILITY.md   # Upgradeability design documentation
+├── GOVERNANCE_GUIDE.md # Step-by-step governance procedures
+├── QUICK_REFERENCE.md  # Quick reference card
 └── README.md           # This file
 ```
 
@@ -190,16 +196,37 @@ Manages decentralized trading operations with governance support.
 - `execute_upgrade()`: Execute approved upgrade (Executor)
 - `cancel_upgrade()`: Cancel proposal (Admin)
 
-### Academy Contract
+### Academy Contract (✨ NEW: Vesting & Rewards)
 
-Manages educational credentials and achievements.
+Manages educational credentials, achievements, and secure vesting of academy rewards.
 
-**Key Functions:**
-- `init()`: Initialize the contract
-- `issue_credential()`: Award credential to user (admin only)
-- `get_user_credentials()`: Retrieve user's credentials
-- `verify_credential()`: Verify a credential exists
-- `get_stats()`: Retrieve credential statistics
+**Two Core Features:**
+
+1. **Vesting Module** (NEW) - Time-based vesting of tokens/badges
+   - `grant_vesting()`: Create vesting schedule (admin only)
+   - `claim()`: Atomic claim of vested tokens (single-claim semantics)
+   - `revoke()`: Revoke grant with timelock protection
+   - `get_vesting()`: Query vesting schedule
+   - `get_vested_amount()`: Calculate current vested amount
+
+2. **Credentials** - Educational achievements
+   - `issue_credential()`: Award credential to user (admin only)
+   - `get_user_credentials()`: Retrieve user's credentials
+   - `verify_credential()`: Verify a credential exists
+
+**Vesting Features:**
+- ✅ Time-based vesting with cliff periods
+- ✅ Linear vesting after cliff
+- ✅ Single-claim semantics (prevents double-spend)
+- ✅ Governance revocation with 1+ hour timelock
+- ✅ Event emission for off-chain indexing
+- ✅ 18+ comprehensive tests
+
+**Documentation:**
+- [VESTING_DESIGN.md](./contracts/academy/VESTING_DESIGN.md) - Complete technical design
+- [VESTING_QUICK_REFERENCE.md](./contracts/academy/VESTING_QUICK_REFERENCE.md) - Quick start
+- [INTEGRATION_GUIDE.md](./contracts/academy/INTEGRATION_GUIDE.md) - Integration examples
+- [README.md](./contracts/academy/README.md) - Academy contract overview
 
 ### Social Rewards Contract
 
