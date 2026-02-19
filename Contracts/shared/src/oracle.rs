@@ -43,10 +43,9 @@ pub fn fetch_aggregate_price(
         let mut args: Vec<Val> = Vec::new(env);
         args.push_back(pair.into_val(env));
 
-        let res: Result<Val, soroban_sdk::Error> =
-            env.try_invoke_contract(&oracle, &func, args);
+        let res = env.try_invoke_contract::<Val, soroban_sdk::Error>(&oracle, &func, args);
 
-        if let Ok(val) = res {
+        if let Ok(Ok(val)) = res {
             let decoded: Result<(i128, u64), soroban_sdk::Error> =
                 FromVal::from_val(env, &val);
 
@@ -75,7 +74,7 @@ pub fn fetch_aggregate_price(
     }
 
     let count = samples.len();
-    if count < min_sources as usize || count == 0 {
+    if count < min_sources || count == 0 {
         return Err(OracleError::InsufficientSources);
     }
 
@@ -89,10 +88,24 @@ pub fn fetch_aggregate_price(
         }
     }
 
-    prices.sort();
+    let len = prices.len();
+    let mut i: u32 = 0;
+    while i < len {
+        let mut j: u32 = i + 1;
+        while j < len {
+            let a = prices.get(i).unwrap();
+            let b = prices.get(j).unwrap();
+            if a > b {
+                prices.set(i, b);
+                prices.set(j, a);
+            }
+            j += 1;
+        }
+        i += 1;
+    }
 
-    let middle = count / 2;
-    let median_price = if count % 2 == 1 {
+    let middle = len / 2;
+    let median_price = if len % 2 == 1 {
         prices.get(middle).unwrap()
     } else {
         let a = prices.get(middle - 1).unwrap();
@@ -103,8 +116,7 @@ pub fn fetch_aggregate_price(
     Ok(OracleAggregate {
         pair: pair.clone(),
         median_price,
-        source_count: count as u32,
+        source_count: len,
         latest_timestamp,
     })
 }
-

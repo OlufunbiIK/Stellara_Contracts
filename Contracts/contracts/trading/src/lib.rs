@@ -161,7 +161,7 @@ impl UpgradeableTradingContract {
             max_staleness,
             min_sources,
         };
-        let config_key = symbol_short!("oracle_cfg");
+        let config_key = symbol_short!("orc_cfg");
         env.storage().persistent().set(&config_key, &config);
 
         Ok(())
@@ -264,7 +264,7 @@ impl UpgradeableTradingContract {
     }
 
     pub fn refresh_oracle_price(env: Env, pair: Symbol) -> Result<OracleAggregate, TradeError> {
-        let config_key = symbol_short!("oracle_cfg");
+        let config_key = symbol_short!("orc_cfg");
         let config: OracleConfig = env
             .storage()
             .persistent()
@@ -275,7 +275,7 @@ impl UpgradeableTradingContract {
             fetch_aggregate_price(&env, &config.oracles, &pair, config.max_staleness, config.min_sources)
                 .map_err(|_| TradeError::OracleFailure)?;
 
-        let status_key = symbol_short!("oracle_status");
+        let status_key = symbol_short!("orc_sts");
         let mut status: OracleStatus = env
             .storage()
             .persistent()
@@ -297,7 +297,7 @@ impl UpgradeableTradingContract {
         env.storage().persistent().set(&status_key, &status);
 
         env.events().publish(
-            (symbol_short!("oracle_update"),),
+            (symbol_short!("orc_upd"),),
             (aggregate.pair.clone(), aggregate.median_price, aggregate.source_count),
         );
 
@@ -305,7 +305,7 @@ impl UpgradeableTradingContract {
     }
 
     pub fn record_oracle_failure(env: Env, pair: Symbol) {
-        let status_key = symbol_short!("oracle_status");
+        let status_key = symbol_short!("orc_sts");
         let mut status: OracleStatus = env
             .storage()
             .persistent()
@@ -322,13 +322,13 @@ impl UpgradeableTradingContract {
         env.storage().persistent().set(&status_key, &status);
 
         env.events().publish(
-            (symbol_short!("oracle_failure"),),
+            (symbol_short!("orc_fail"),),
             status.consecutive_failures,
         );
     }
 
     pub fn get_oracle_status(env: Env) -> OracleStatus {
-        let status_key = symbol_short!("oracle_status");
+        let status_key = symbol_short!("orc_sts");
         env.storage()
             .persistent()
             .get(&status_key)
