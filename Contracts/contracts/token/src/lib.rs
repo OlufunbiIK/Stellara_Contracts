@@ -1,251 +1,322 @@
+//! # Stellara Advanced Token Contract
+//!
+//! This contract extends the base fungible token (SEP-41) to support:
+//! - **NFTs** (Non-Fungible Tokens): unique tokens with metadata & ownership
+//! - **Semi-Fungible Tokens (SFT)**: ERC-1155-style token classes with supply
+//! - **Custom Extensions**: pausable transfers, royalties, whitelisting
+//!
+//! ## Architecture
+//!
+//! ```
+//! contracts/token/src/
+//! ├── lib.rs                      ← this file (contract entry, routing)
+//! ├── storage_types.rs            ← all StorageKey enums
+//! ├── errors.rs                   ← contract error codes
+//! ├── events.rs                   ← emitted events
+//! ├── admin.rs                    ← admin / access control
+//! ├── nft/
+//! │   ├── mod.rs                  ← NFT module
+//! │   ├── contract.rs             ← NFT contract trait impl
+//! │   └── metadata.rs             ← NFT metadata helpers
+//! ├── semi_fungible/
+//! │   ├── mod.rs                  ← SFT module
+//! │   └── contract.rs             ← SFT contract trait impl
+//! └── extensions/
+//!     ├── mod.rs                  ← extensions module
+//!     ├── pausable.rs             ← pausable transfers extension
+//!     ├── royalty.rs              ← royalty extension
+//!     └── whitelist.rs            ← whitelist extension
+//! ```
+
 #![no_std]
 
+mod admin;
+mod errors;
+mod events;
+mod nft;
+mod semi_fungible;
+mod extensions;
+mod storage_types;
+
+
+
 use soroban_sdk::{
-    contract, contractimpl, Address, Env, Error, IntoVal, String, Symbol, Val, Vec,
+    contract, contractimpl, Address, Env, String, Vec,
 };
 
-mod admin;
-mod storage;
+use nft::contract::NftImpl;
+use semi_fungible::contract::SftImpl;
+use extensions::pausable::PausableImpl;
+use extensions::royalty::RoyaltyImpl;
+use extensions::whitelist::WhitelistImpl;
+use storage_types::StorageKey;
+use errors::TokenError;
+use events::TokenEvents;
 
-use storage::{Allowance, TokenMetadata};
+// ─────────────────────────────────────────────────────────────────
+// Contract struct
+// ─────────────────────────────────────────────────────────────────
 
 #[contract]
-pub struct TokenContract;
+pub struct AdvancedTokenContract;
+
+// ─────────────────────────────────────────────────────────────────
+// Contract implementation
+// ─────────────────────────────────────────────────────────────────
 
 #[contractimpl]
-impl TokenContract {
-    /// Initialize token metadata and admin.
-    pub fn initialize(env: Env, admin: Address, name: String, symbol: String, decimals: u32) {
-        if storage::has_admin(&env) {
-            panic!("Already initialized");
+impl AdvancedTokenContract {
+
+    // ──────────────────────────────────────────
+    // Initialisation
+    // ──────────────────────────────────────────
+
+    /// Initialise the contract.
+    ///
+    /// Must be called once immediately after deployment.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        name: String,
+        symbol: String,
+    ) {
+        if env.storage().instance().has(&StorageKey::Admin) {
+            panic!("already initialised");
         }
-        admin.require_auth();
-        storage::set_admin(&env, &admin);
-        storage::set_metadata(&env, &TokenMetadata { name, symbol, decimals });
-        storage::set_total_supply(&env, 0);
+        env.storage().instance().set(&StorageKey::Admin, &admin);
+        env.storage().instance().set(&StorageKey::Name, &name);
+        env.storage().instance().set(&StorageKey::Symbol, &symbol);
+        env.storage().instance().set(&StorageKey::Paused, &false);
+        env.storage().instance().set(&StorageKey::NftCounter, &0u64);
+        env.storage().instance().set(&StorageKey::SftClassCounter, &0u64);
+
+        TokenEvents::initialized(&env, &admin, &name, &symbol);
     }
 
-    // --------- Standard token interface ---------
-    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
-        storage::get_allowance_amount(&env, &from, &spender)
+    // ──────────────────────────────────────────
+    // Admin
+    // ──────────────────────────────────────────
+
+    pub fn get_admin(env: Env) -> Address {
+        admin::require_admin(&env);
+        env.storage().instance().get(&StorageKey::Admin).unwrap()
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+    pub fn set_admin(env: Env, new_admin: Address) {
+        admin::require_admin(&env);
+        env.storage().instance().set(&StorageKey::Admin, &new_admin);
+        TokenEvents::admin_changed(&env, &new_admin);
+    }
+
+    // ──────────────────────────────────────────
+    // NFT Interface
+    // ──────────────────────────────────────────
+
+    /// Mint a new NFT to `to` with a URI pointing to off-chain metadata.
+    pub fn nft_mint(env: Env, to: Address, uri: String) -> u64 {
+        admin::require_admin(&env);
+        extensions::pausable::require_not_paused(&env);
+        NftImpl::mint(&env, &to, &uri)
+    }
+
+    /// Transfer an NFT from `from` to `to`.
+    pub fn nft_transfer(env: Env, from: Address, to: Address, token_id: u64) {
         from.require_auth();
-        ensure_nonnegative(amount);
-
-        let current_ledger = env.ledger().sequence();
-        if expiration_ledger < current_ledger && amount != 0 {
-            panic!("Invalid expiration");
+        extensions::pausable::require_not_paused(&env);
+        if extensions::whitelist::is_enabled(&env) {
+            extensions::whitelist::require_whitelisted(&env, &to);
         }
-
-        let allowance = Allowance {
-            amount,
-            expiration_ledger,
-        };
-        storage::set_allowance(&env, &from, &spender, &allowance);
-
-        env.events().publish(
-            (Symbol::new(&env, "approve"), from, spender),
-            (amount, expiration_ledger),
-        );
+        NftImpl::transfer(&env, &from, &to, token_id);
     }
 
-    pub fn balance(env: Env, id: Address) -> i128 {
-        storage::balance_of(&env, &id)
+    /// Approve a spender to manage a specific NFT.
+    pub fn nft_approve(env: Env, owner: Address, approved: Address, token_id: u64) {
+        owner.require_auth();
+        NftImpl::approve(&env, &owner, &approved, token_id);
     }
 
-    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
-        from.require_auth();
-        ensure_nonnegative(amount);
-        require_authorized(&env, &from);
-
-        internal_transfer(&env, &from, &to, amount);
-    }
-
-    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+    /// Transfer an NFT on behalf of the owner (requires prior approval).
+    pub fn nft_transfer_from(env: Env, spender: Address, from: Address, to: Address, token_id: u64) {
         spender.require_auth();
-        ensure_nonnegative(amount);
-        require_authorized(&env, &from);
-
-        spend_allowance(&env, &from, &spender, amount);
-        internal_transfer(&env, &from, &to, amount);
+        extensions::pausable::require_not_paused(&env);
+        NftImpl::transfer_from(&env, &spender, &from, &to, token_id);
     }
 
-    pub fn burn(env: Env, from: Address, amount: i128) {
+    /// Burn (destroy) an NFT.
+    pub fn nft_burn(env: Env, from: Address, token_id: u64) {
         from.require_auth();
-        ensure_nonnegative(amount);
-        require_authorized(&env, &from);
-
-        burn_balance(&env, &from, amount);
-        env.events()
-            .publish((Symbol::new(&env, "burn"), from), amount);
+        NftImpl::burn(&env, &from, token_id);
     }
 
-    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
-        spender.require_auth();
-        ensure_nonnegative(amount);
-        require_authorized(&env, &from);
-
-        spend_allowance(&env, &from, &spender, amount);
-        burn_balance(&env, &from, amount);
-        env.events()
-            .publish((Symbol::new(&env, "burn"), from), amount);
+    /// Return the owner of an NFT.
+    pub fn nft_owner_of(env: Env, token_id: u64) -> Address {
+        NftImpl::owner_of(&env, token_id)
     }
 
-    pub fn decimals(env: Env) -> u32 {
-        storage::get_metadata(&env).decimals
+    /// Return the metadata URI for an NFT.
+    pub fn nft_token_uri(env: Env, token_id: u64) -> String {
+        NftImpl::token_uri(&env, token_id)
     }
+
+    /// Return how many NFTs `owner` holds.
+    pub fn nft_balance_of(env: Env, owner: Address) -> u64 {
+        NftImpl::balance_of(&env, &owner)
+    }
+
+    /// Return total number of NFTs minted.
+    pub fn nft_total_supply(env: Env) -> u64 {
+        NftImpl::total_supply(&env)
+    }
+
+    // ──────────────────────────────────────────
+    // Semi-Fungible Token (SFT) Interface
+    // ──────────────────────────────────────────
+
+    /// Create a new SFT class, returning its class_id.
+    pub fn sft_create_class(
+        env: Env,
+        name: String,
+        uri: String,
+        max_supply: u64,
+    ) -> u64 {
+        admin::require_admin(&env);
+        SftImpl::create_class(&env, &name, &uri, max_supply)
+    }
+
+    /// Mint `amount` of `class_id` tokens to `to`.
+    pub fn sft_mint(env: Env, to: Address, class_id: u64, amount: u64) {
+        admin::require_admin(&env);
+        extensions::pausable::require_not_paused(&env);
+        SftImpl::mint(&env, &to, class_id, amount);
+    }
+
+    /// Transfer `amount` of `class_id` tokens from `from` to `to`.
+    pub fn sft_transfer(env: Env, from: Address, to: Address, class_id: u64, amount: u64) {
+        from.require_auth();
+        extensions::pausable::require_not_paused(&env);
+        if extensions::whitelist::is_enabled(&env) {
+            extensions::whitelist::require_whitelisted(&env, &to);
+        }
+        SftImpl::transfer(&env, &from, &to, class_id, amount);
+    }
+
+    /// Batch-transfer multiple classes at once.
+    pub fn sft_batch_transfer(
+        env: Env,
+        from: Address,
+        to: Address,
+        class_ids: Vec<u64>,
+        amounts: Vec<u64>,
+    ) {
+        from.require_auth();
+        extensions::pausable::require_not_paused(&env);
+        SftImpl::batch_transfer(&env, &from, &to, &class_ids, &amounts);
+    }
+
+    /// Burn `amount` of `class_id` from `from`.
+    pub fn sft_burn(env: Env, from: Address, class_id: u64, amount: u64) {
+        from.require_auth();
+        SftImpl::burn(&env, &from, class_id, amount);
+    }
+
+    /// Return the balance of `class_id` tokens for `owner`.
+    pub fn sft_balance_of(env: Env, owner: Address, class_id: u64) -> u64 {
+        SftImpl::balance_of(&env, &owner, class_id)
+    }
+
+    /// Return the total minted supply of a class.
+    pub fn sft_class_supply(env: Env, class_id: u64) -> u64 {
+        SftImpl::class_supply(&env, class_id)
+    }
+
+    /// Return the metadata URI for a class.
+    pub fn sft_class_uri(env: Env, class_id: u64) -> String {
+        SftImpl::class_uri(&env, class_id)
+    }
+
+    // ──────────────────────────────────────────
+    // Extension: Pausable
+    // ──────────────────────────────────────────
+
+    /// Pause all token transfers.
+    pub fn pause(env: Env) {
+        admin::require_admin(&env);
+        PausableImpl::pause(&env);
+    }
+
+    /// Resume token transfers.
+    pub fn unpause(env: Env) {
+        admin::require_admin(&env);
+        PausableImpl::unpause(&env);
+    }
+
+    /// Return whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        PausableImpl::is_paused(&env)
+    }
+
+    // ──────────────────────────────────────────
+    // Extension: Royalty
+    // ──────────────────────────────────────────
+
+    /// Set the royalty receiver and basis-points (max 10 000 = 100 %).
+    pub fn set_royalty(env: Env, receiver: Address, basis_points: u32) {
+        admin::require_admin(&env);
+        RoyaltyImpl::set_royalty(&env, &receiver, basis_points);
+    }
+
+    /// Return the royalty info: (receiver, basis_points).
+    pub fn get_royalty(env: Env) -> (Address, u32) {
+        RoyaltyImpl::get_royalty(&env)
+    }
+
+    /// Calculate the royalty amount for a given sale price.
+    pub fn royalty_amount(env: Env, sale_price: u64) -> u64 {
+        RoyaltyImpl::calculate(&env, sale_price)
+    }
+
+    // ──────────────────────────────────────────
+    // Extension: Whitelist
+    // ──────────────────────────────────────────
+
+    /// Enable the transfer whitelist.
+    pub fn enable_whitelist(env: Env) {
+        admin::require_admin(&env);
+        WhitelistImpl::enable(&env);
+    }
+
+    /// Disable the transfer whitelist.
+    pub fn disable_whitelist(env: Env) {
+        admin::require_admin(&env);
+        WhitelistImpl::disable(&env);
+    }
+
+    /// Add an address to the whitelist.
+    pub fn add_to_whitelist(env: Env, addr: Address) {
+        admin::require_admin(&env);
+        WhitelistImpl::add(&env, &addr);
+    }
+
+    /// Remove an address from the whitelist.
+    pub fn remove_from_whitelist(env: Env, addr: Address) {
+        admin::require_admin(&env);
+        WhitelistImpl::remove(&env, &addr);
+    }
+
+    /// Check whether an address is whitelisted.
+    pub fn is_whitelisted(env: Env, addr: Address) -> bool {
+        WhitelistImpl::is_whitelisted(&env, &addr)
+    }
+
+    // ──────────────────────────────────────────
+    // Metadata (shared)
+    // ──────────────────────────────────────────
 
     pub fn name(env: Env) -> String {
-        storage::get_metadata(&env).name
+        env.storage().instance().get(&StorageKey::Name).unwrap()
     }
 
     pub fn symbol(env: Env) -> String {
-        storage::get_metadata(&env).symbol
+        env.storage().instance().get(&StorageKey::Symbol).unwrap()
     }
-
-    // --------- Admin interface ---------
-    pub fn set_admin(env: Env, new_admin: Address) {
-        let current_admin = storage::get_admin(&env);
-        current_admin.require_auth();
-        storage::set_admin(&env, &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "set_admin"), current_admin),
-            new_admin,
-        );
-    }
-
-    pub fn admin(env: Env) -> Address {
-        storage::get_admin(&env)
-    }
-
-    pub fn set_authorized(env: Env, id: Address, authorize: bool) {
-        admin::require_admin(&env);
-        storage::set_authorized(&env, &id, authorize);
-        env.events().publish(
-            (Symbol::new(&env, "set_authorized"), id),
-            authorize,
-        );
-    }
-
-    pub fn authorized(env: Env, id: Address) -> bool {
-        storage::get_authorized(&env, &id)
-    }
-
-    pub fn mint(env: Env, to: Address, amount: i128) {
-        admin::require_admin(&env);
-        ensure_nonnegative(amount);
-
-        let balance = storage::balance_of(&env, &to);
-        let new_balance = balance.checked_add(amount).expect("Overflow");
-        storage::set_balance(&env, &to, &new_balance);
-
-        let supply = storage::total_supply(&env);
-        let new_supply = supply.checked_add(amount).expect("Overflow");
-        storage::set_total_supply(&env, new_supply);
-
-        env.events().publish(
-            (Symbol::new(&env, "mint"), storage::get_admin(&env), to),
-            amount,
-        );
-    }
-
-    pub fn clawback(env: Env, from: Address, amount: i128) {
-        admin::require_admin(&env);
-        ensure_nonnegative(amount);
-
-        burn_balance(&env, &from, amount);
-        env.events().publish(
-            (Symbol::new(&env, "clawback"), storage::get_admin(&env), from),
-            amount,
-        );
-    }
-
-    // --------- Additional helpers ---------
-    pub fn total_supply(env: Env) -> i128 {
-        storage::total_supply(&env)
-    }
-}
-
-fn ensure_nonnegative(amount: i128) {
-    if amount < 0 {
-        panic!("Negative amount");
-    }
-}
-
-fn require_authorized(env: &Env, id: &Address) {
-    if !storage::get_authorized(env, id) {
-        panic!("Unauthorized");
-    }
-}
-
-fn spend_allowance(env: &Env, from: &Address, spender: &Address, amount: i128) {
-    let allowance = storage::get_allowance(env, from, spender);
-    let current_ledger = env.ledger().sequence();
-
-    let available = if allowance.expiration_ledger < current_ledger {
-        0
-    } else {
-        allowance.amount
-    };
-
-    if amount > available {
-        panic!("Allowance exceeded");
-    }
-
-    let remaining = available.checked_sub(amount).expect("Overflow");
-    let updated = Allowance {
-        amount: remaining,
-        expiration_ledger: allowance.expiration_ledger,
-    };
-    storage::set_allowance(env, from, spender, &updated);
-}
-
-fn burn_balance(env: &Env, from: &Address, amount: i128) {
-    let balance = storage::balance_of(env, from);
-    if amount > balance {
-        panic!("Insufficient balance");
-    }
-
-    let new_balance = balance.checked_sub(amount).expect("Overflow");
-    storage::set_balance(env, from, &new_balance);
-
-    let supply = storage::total_supply(env);
-    let new_supply = supply.checked_sub(amount).expect("Overflow");
-    storage::set_total_supply(env, new_supply);
-}
-
-fn internal_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
-    if amount == 0 || from == to {
-        return;
-    }
-
-    let from_balance = storage::balance_of(env, from);
-    if amount > from_balance {
-        panic!("Insufficient balance");
-    }
-
-    let to_balance = storage::balance_of(env, to);
-
-    let new_from = from_balance.checked_sub(amount).expect("Overflow");
-    let new_to = to_balance.checked_add(amount).expect("Overflow");
-
-    storage::set_balance(env, from, &new_from);
-    storage::set_balance(env, to, &new_to);
-
-    env.events()
-        .publish((Symbol::new(env, "transfer"), from, to), amount);
-
-    invoke_transfer_hook(env, from, to, amount);
-}
-
-fn invoke_transfer_hook(env: &Env, from: &Address, to: &Address, amount: i128) {
-    let func = Symbol::new(env, "on_token_transfer");
-    let mut args = Vec::new(env);
-    args.push_back(env.current_contract_address().into_val(env));
-    args.push_back(from.clone().into_val(env));
-    args.push_back(amount.into_val(env));
-
-    let _ = env.try_invoke_contract::<Val, Error>(to, &func, args);
 }
