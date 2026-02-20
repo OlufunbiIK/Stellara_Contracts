@@ -39,19 +39,24 @@ export class StructuredLogger extends Logger implements LoggerService {
     });
   }
 
-  log(message: any, context?: string): any {
-    this.logger.info(message, { context });
+  log(message: any, context?: string, meta?: Record<string, any>): any {
+    this.logger.info(message, { context, ...meta });
   }
-  error(message: any, trace?: string, context?: string): any {
-    this.logger.error(message, { trace, context });
+  error(
+    message: any,
+    trace?: string,
+    context?: string,
+    meta?: Record<string, any>,
+  ): any {
+    this.logger.error(message, { trace, context, ...meta });
   }
-  warn(message: any, context?: string): any {
-    this.logger.warn(message, { context });
+  warn(message: any, context?: string, meta?: Record<string, any>): any {
+    this.logger.warn(message, { context, ...meta });
   }
-  debug(message: any, context?: string): any {
-    this.logger.debug(message, { context });
+  debug(message: any, context?: string, meta?: Record<string, any>): any {
+    this.logger.debug(message, { context, ...meta });
   }
-  verbose(message: any, context?: string): any {
-    this.logger.verbose(message, { context });
+  verbose(message: any, context?: string, meta?: Record<string, any>): any {
+    this.logger.verbose(message, { context, ...meta });
   }
 }

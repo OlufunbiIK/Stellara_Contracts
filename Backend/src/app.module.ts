@@ -36,6 +36,9 @@ import { ThrottleModule } from './throttle/throttle.module';
 
 @Module({
   imports: [
+    // logging comes first so correlation middleware wraps every request
+    LoggingModule,
+
     ConfigModule.forRoot({
       isGlobal: true,
     }),
@@ -76,9 +79,6 @@ import { ThrottleModule } from './throttle/throttle.module';
     MarketDataModule,
     AuditModule,
     ThrottleModule,
-
-    // add logging globally so middleware is applied early
-    LoggingModule,
   ],
 
   controllers: [AppController],

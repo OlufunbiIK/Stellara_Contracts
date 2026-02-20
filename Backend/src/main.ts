@@ -5,12 +5,26 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { ThrottleGuard } from './throttle/throttle.guard';
 import { StructuredLogger } from './logging/structured-logger.service';
+import { AllExceptionsFilter } from './logging/all-exceptions.filter';
+import { MetricsService } from './logging/metrics.service';
+import { ErrorTrackingService } from './logging/error-tracking.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   // swap out Nest's default logger with our structured implementation
   const logger = app.get(StructuredLogger);
   app.useLogger(logger);
+
+  // monkey‑patch Nest's Logger prototype so `new Logger()` instances
+  // also use the structured logger logic and include correlation IDs.
+  const nestProto: any = (require('@nestjs/common').Logger as any).prototype;
+  ['log', 'error', 'warn', 'debug', 'verbose'].forEach(method => {
+    const orig = nestProto[method];
+    nestProto[method] = function (message: any, ...args: any[]) {
+      // delegate to our global structured logger
+      (logger as any)[method](message, ...args);
+    };
+  });
 
   // Enable validation globally
   app.useGlobalPipes(
@@ -39,11 +53,13 @@ async function bootstrap() {
   app.useWebSocketAdapter(redisIoAdapter);
   app.useGlobalGuards(app.get(ThrottleGuard));
 
-  // register global exception filter so every error passes through structured logging
-  app.useGlobalFilters(app.get(require('./logging/all-exceptions.filter').AllExceptionsFilter));
+  // register an exception filter so all uncaught errors are handled centrally
+  const errorTracker = app.get(ErrorTrackingService);
+  const metricsService = app.get(MetricsService);
+  const globalFilter = new AllExceptionsFilter(errorTracker, metricsService);
+  app.useGlobalFilters(globalFilter);
 
   // expose Prometheus metrics on a simple endpoint
-  const metricsService = app.get(require('./logging/metrics.service').MetricsService);
   app.get('/metrics', async (_req, res) => {
     res.set('Content-Type', 'text/plain');
     res.send(await metricsService.getMetrics());

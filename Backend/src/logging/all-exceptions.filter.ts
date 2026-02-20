@@ -42,11 +42,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.metrics.incrementError(severity, 'http');
     }
 
-    // structured log
+    // structured log with category/severity meta
     this.logger.error(
       message,
       (exception as any).stack,
       AllExceptionsFilter.name,
+      { severity, category: 'http' },
     );
 
     await this.errorTracker.track({
