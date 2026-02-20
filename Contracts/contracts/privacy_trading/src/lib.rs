@@ -55,6 +55,24 @@ pub enum PrivateTradeError {
     InvalidPrice = 11,
 }
 
+impl From<PrivateTradeError> for soroban_sdk::Error {
+    fn from(err: PrivateTradeError) -> Self {
+        soroban_sdk::Error::from_contract_error(err as u32)
+    }
+}
+
+impl From<&PrivateTradeError> for soroban_sdk::Error {
+    fn from(err: &PrivateTradeError) -> Self {
+        soroban_sdk::Error::from_contract_error(*err as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for PrivateTradeError {
+    fn from(_err: soroban_sdk::Error) -> Self {
+        PrivateTradeError::InvalidProof
+    }
+}
+
 /// Contract data keys
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -151,7 +169,7 @@ pub struct PrivateTradingContract;
 impl PrivateTradingContract {
     /// Initialize the contract
     pub fn initialize(
-        env: Env,
+        env: &Env,
         admin: Address,
         base_token: Address,
         quote_token: Address,
@@ -195,7 +213,7 @@ impl PrivateTradingContract {
     /// Create a private order
     /// Trader provides commitment to amount and nullifier hash
     pub fn create_order(
-        env: Env,
+        env: &Env,
         trader: Address,
         side: OrderSide,
         price: i128,
@@ -206,7 +224,7 @@ impl PrivateTradingContract {
         trader.require_auth();
 
         // Check not paused
-        if Self::is_paused(&env) {
+        if Self::is_paused(env) {
             return Err(PrivateTradeError::Paused);
         }
 
@@ -220,7 +238,7 @@ impl PrivateTradingContract {
         }
 
         // Check nullifier hasn't been used
-        if Self::is_nullifier_used(&env, &nullifier_hash) {
+        if Self::is_nullifier_used(&env, nullifier_hash.clone()) {
             return Err(PrivateTradeError::AlreadySpent);
         }
 
@@ -242,7 +260,7 @@ impl PrivateTradingContract {
             status: OrderStatus::Open,
             created_at: env.ledger().timestamp(),
             expires_at,
-            filled_commitment: BytesN::from_array(&env, [0u8; 32]),
+            filled_commitment: BytesN::from_array(&env, &[0u8; 32]),
         };
 
         // Store order
@@ -252,7 +270,7 @@ impl PrivateTradingContract {
         env.storage().persistent().set(
             &PrivacyPoolDataKey::Nullifier(nullifier_hash),
             &Nullifier {
-                hash: BytesN::from_array(&env, [0u8; 32]),
+                hash: BytesN::from_array(&env, &[0u8; 32]),
                 is_spent: true,
                 spent_at: env.ledger().timestamp(),
             },
@@ -285,7 +303,7 @@ impl PrivateTradingContract {
 
     /// Cancel an order
     pub fn cancel_order(
-        env: Env,
+        env: &Env,
         trader: Address,
         order_id: u64,
     ) -> Result<(), PrivateTradeError> {
@@ -324,7 +342,7 @@ impl PrivateTradingContract {
     /// Execute a trade between two orders
     /// This is typically called by a matcher/relayer
     pub fn execute_trade(
-        env: Env,
+        env: &Env,
         executor: Address,
         buy_order_id: u64,
         sell_order_id: u64,
@@ -335,7 +353,7 @@ impl PrivateTradingContract {
         executor.require_auth();
 
         // Check not paused
-        if Self::is_paused(&env) {
+        if Self::is_paused(env) {
             return Err(PrivateTradeError::Paused);
         }
 
@@ -411,10 +429,10 @@ impl PrivateTradingContract {
     }
 
     /// Get user's order count
-    pub fn get_user_order_count(env: &Env, user: &Address) -> u32 {
+    pub fn get_user_order_count(env: &Env, user: Address) -> u32 {
         env.storage()
             .persistent()
-            .get(&DataKey::UserOrders(user.clone()))
+            .get(&DataKey::UserOrders(user))
             .map(|orders: Vec<u64>| orders.len())
             .unwrap_or(0)
     }
@@ -441,7 +459,7 @@ impl PrivateTradingContract {
     }
 
     /// Check if nullifier has been used
-    pub fn is_nullifier_used(env: &Env, nullifier_hash: &BytesN<32>) -> bool {
+    pub fn is_nullifier_used(env: &Env, nullifier_hash: BytesN<32>) -> bool {
         env.storage()
             .persistent()
             .get::<PrivacyPoolDataKey, Nullifier>(&PrivacyPoolDataKey::Nullifier(nullifier_hash.clone()))
@@ -452,18 +470,18 @@ impl PrivateTradingContract {
     /// Verify a commitment
     pub fn verify_commitment(
         env: &Env,
-        commitment: &BytesN<32>,
+        commitment: BytesN<32>,
         value: i128,
-        blinding_factor: &BytesN<32>,
+        blinding_factor: BytesN<32>,
     ) -> bool {
-        PrivacyPool::verify_commitment(env, commitment, value, blinding_factor)
+        PrivacyPool::verify_commitment(&env, &commitment, value, &blinding_factor)
     }
 
     /// Pause contract (admin only)
-    pub fn pause(env: Env, admin: Address) -> Result<(), PrivateTradeError> {
+    pub fn pause(env: &Env, admin: Address) -> Result<(), PrivateTradeError> {
         admin.require_auth();
 
-        if !Self::is_admin(&env, &admin) {
+        if !Self::is_admin(env, admin.clone()) {
             return Err(PrivateTradeError::Unauthorized);
         }
 
@@ -478,10 +496,10 @@ impl PrivateTradingContract {
     }
 
     /// Unpause contract (admin only)
-    pub fn unpause(env: Env, admin: Address) -> Result<(), PrivateTradeError> {
+    pub fn unpause(env: &Env, admin: Address) -> Result<(), PrivateTradeError> {
         admin.require_auth();
 
-        if !Self::is_admin(&env, &admin) {
+        if !Self::is_admin(env, admin.clone()) {
             return Err(PrivateTradeError::Unauthorized);
         }
 
@@ -504,11 +522,11 @@ impl PrivateTradingContract {
     }
 
     /// Check if address is admin
-    pub fn is_admin(env: &Env, address: &Address) -> bool {
+    pub fn is_admin(env: &Env, address: Address) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .map(|admin: Address| admin == *address)
+            .map(|admin: Address| admin == address)
             .unwrap_or(false)
     }
 }
@@ -518,7 +536,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
-    fn setup_env() -> (Env, Address, Address, PrivateTradingContractClient<'static>) {
+    fn setup_env() -> (Env, Address, Address, Address, PrivateTradingContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -679,8 +697,8 @@ mod tests {
             );
         }
 
-        let orders = client.get_user_orders(&trader);
-        assert_eq!(orders.len(), 3);
+        let orders = client.get_user_order_count(&trader);
+        assert_eq!(orders, 3);
     }
 
     #[test]

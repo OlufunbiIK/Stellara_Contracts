@@ -453,7 +453,7 @@ mod tests {
     fn test_commitment_computation() {
         let env = Env::default();
         let value = 1000i128;
-        let blinding_factor = BytesN::from_array(&env, [1u8; 32]);
+        let blinding_factor = BytesN::from_array(&env, &[1u8; 32]);
         
         let commitment = PrivacyPool::compute_commitment(&env, value, &blinding_factor);
         
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn test_nullifier_computation() {
         let env = Env::default();
-        let secret = BytesN::from_array(&env, [2u8; 32]);
+        let secret = BytesN::from_array(&env, &[2u8; 32]);
         
         let nullifier = PrivacyPool::compute_nullifier_hash(&env, &secret);
         

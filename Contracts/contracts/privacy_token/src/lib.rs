@@ -56,6 +56,24 @@ pub enum PrivateTokenError {
     NotInitialized = 9,
 }
 
+impl From<PrivateTokenError> for soroban_sdk::Error {
+    fn from(err: PrivateTokenError) -> Self {
+        soroban_sdk::Error::from_contract_error(err as u32)
+    }
+}
+
+impl From<&PrivateTokenError> for soroban_sdk::Error {
+    fn from(err: &PrivateTokenError) -> Self {
+        soroban_sdk::Error::from_contract_error(*err as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for PrivateTokenError {
+    fn from(_err: soroban_sdk::Error) -> Self {
+        PrivateTokenError::InvalidProof
+    }
+}
+
 /// Contract data keys
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -197,7 +215,7 @@ impl PrivateTokenContract {
         }
 
         // Deduct from public balance
-        let current_balance = Self::public_balance(&env, &from);
+        let current_balance = Self::public_balance(&env, from.clone());
         if current_balance < amount {
             return Err(PrivateTokenError::InsufficientBalance);
         }
@@ -264,7 +282,7 @@ impl PrivateTokenContract {
             })?;
 
         // Add to public balance
-        let current_balance = Self::public_balance(&env, &to);
+        let current_balance = Self::public_balance(&env, to.clone());
         env.storage()
             .persistent()
             .set(&DataKey::PublicBalance(to.clone()), &(current_balance + amount));
@@ -350,7 +368,7 @@ impl PrivateTokenContract {
         admin.require_auth();
 
         // Verify admin
-        if !Self::is_admin(&env, &admin) {
+        if !Self::is_admin(&env, admin.clone()) {
             return Err(PrivateTokenError::Unauthorized);
         }
 
@@ -360,7 +378,7 @@ impl PrivateTokenContract {
         }
 
         // Add to public balance
-        let current_balance = Self::public_balance(&env, &to);
+        let current_balance = Self::public_balance(&env, to.clone());
         env.storage()
             .persistent()
             .set(&DataKey::PublicBalance(to.clone()), &(current_balance + amount));
@@ -394,7 +412,7 @@ impl PrivateTokenContract {
         }
 
         // Check balance
-        let current_balance = Self::public_balance(&env, &from);
+        let current_balance = Self::public_balance(&env, from.clone());
         if current_balance < amount {
             return Err(PrivateTokenError::InsufficientBalance);
         }
@@ -439,7 +457,7 @@ impl PrivateTokenContract {
         }
 
         // Check balance
-        let from_balance = Self::public_balance(&env, &from);
+        let from_balance = Self::public_balance(&env, from.clone());
         if from_balance < amount {
             return Err(PrivateTokenError::InsufficientBalance);
         }
@@ -449,7 +467,7 @@ impl PrivateTokenContract {
             .persistent()
             .set(&DataKey::PublicBalance(from.clone()), &(from_balance - amount));
 
-        let to_balance = Self::public_balance(&env, &to);
+        let to_balance = Self::public_balance(&env, to.clone());
         env.storage()
             .persistent()
             .set(&DataKey::PublicBalance(to.clone()), &(to_balance + amount));
@@ -464,10 +482,10 @@ impl PrivateTokenContract {
     }
 
     /// Get public balance
-    pub fn public_balance(env: &Env, account: &Address) -> i128 {
+    pub fn public_balance(env: &Env, account: Address) -> i128 {
         env.storage()
             .persistent()
-            .get(&DataKey::PublicBalance(account.clone()))
+            .get(&DataKey::PublicBalance(account))
             .unwrap_or(0)
     }
 
@@ -518,7 +536,7 @@ impl PrivateTokenContract {
     pub fn pause(env: Env, admin: Address) -> Result<(), PrivateTokenError> {
         admin.require_auth();
 
-        if !Self::is_admin(&env, &admin) {
+        if !Self::is_admin(&env, admin.clone()) {
             return Err(PrivateTokenError::Unauthorized);
         }
 
@@ -536,7 +554,7 @@ impl PrivateTokenContract {
     pub fn unpause(env: Env, admin: Address) -> Result<(), PrivateTokenError> {
         admin.require_auth();
 
-        if !Self::is_admin(&env, &admin) {
+        if !Self::is_admin(&env, admin.clone()) {
             return Err(PrivateTokenError::Unauthorized);
         }
 
@@ -559,11 +577,11 @@ impl PrivateTokenContract {
     }
 
     /// Check if address is admin
-    pub fn is_admin(env: &Env, address: &Address) -> bool {
+    pub fn is_admin(env: &Env, address: Address) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .map(|admin: Address| admin == *address)
+            .map(|admin: Address| admin == address)
             .unwrap_or(false)
     }
 
@@ -677,14 +695,14 @@ mod tests {
         // Verify commitment was stored
         let commitment = client.get_commitment(&0);
         assert!(commitment.is_some());
-
+        
         // Compute nullifier hash
         let nullifier_hash = PrivacyPool::compute_nullifier_hash(&env, &note.nullifier_secret);
-
+        
         // Withdraw from privacy pool
         client.withdraw(&user, &500, &nullifier_hash);
         assert_eq!(client.public_balance(&user), 1000);
-
+        
         // Verify nullifier is marked as spent
         assert!(client.is_spent(&nullifier_hash));
     }
@@ -746,7 +764,7 @@ mod tests {
 
         // Verify commitment matches
         assert!(client.verify_commitment(&note.commitment, &value, &note.blinding_factor));
-
+        
         // Verify wrong value fails
         assert!(!client.verify_commitment(&note.commitment, &999, &note.blinding_factor));
     }
